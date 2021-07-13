@@ -79,9 +79,23 @@ Get-WindowsOptionalFeature -Online | select FeatureName,State | export-csv -deli
 echo "Bios Information:`n" | Add-Content -Path $path\$logfile
 Get-WmiObject -Class WIN32_BIOS | Add-Content -Path $path\$logfile
 
+# checking if Windows update service is running, if not set it to manual temporarily to allow the script to extract patch information. Reset it to the previous state afterwards
+$status = (Get-Service -Name wuauserv).StartType
+if ($status = 'Disabled')
+{
+    Get-Service wuauserv | Set-Service -StartupType Manual -Status Running
+}
+
 echo "Extracting Installed patches`n" | Add-Content -Path $path\$logfile
 Get-WuaHistory | select Result,Date,Title,Product | export-csv -delimiter "`t" -path $path\installed-patches_$env:computername.txt -notype
 Get-HotFix | export-csv -delimiter "`t" -path $path\installed-hotfixes_$env:computername.txt -notype
+
+# reset the windows update status
+if ($status = 'Disabled')
+{
+    Get-Service wuauserv | Stop-Service -Force
+    Get-Service wuauserv | Set-Service -StartupType Disabled
+}
 
 echo "Extracting running services with account names`n" | Add-Content -Path $path\$logfile
 Get-WmiObject Win32_Service -filter 'State LIKE "Running"' | select DisplayName, StartName, State | export-csv -delimiter "`t" -path $path\services_$env:computername.txt -notype
