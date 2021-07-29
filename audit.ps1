@@ -199,6 +199,8 @@ reg save hklm\system $path\system.sav
 reg save hklm\security $path\security.sav
 reg save hklm\sam $path\sam.sav
 reg export hklm $path\hklm.reg
+# export tcp ip parameters for quicker analysis
+reg export hklm\system\CurrentControlSet\Services\Tcpip\Parameters $path\tcpip_parameters.txt
 
 $compress = @{
 Path= "$path\*.sav", "$path\hklm.reg"
