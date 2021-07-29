@@ -1,8 +1,14 @@
 # This system audit script is created by dieter [at] secudea [dot] be
 
+
+function ConvertTo-Hex
+{
+    Param([int]$Number)
+    '0x{0:x}' -f $Number
+}
+
 # Convert Wua History ResultCode to a Name # 0, and 5 are not used for history # See https://msdn.microsoft.com/en-us/library/windows/desktop/aa387095(v=vs.85).aspx
 # Copy from https://www.thewindowsclub.com/check-windows-update-history-using-powershell
-
 function Convert-WuaResultCodeToName
 {
 param( [Parameter(Mandatory=$true)]
@@ -26,6 +32,7 @@ $Result = "Failed"
 }
 return $Result
 }
+
 function Get-WuaHistory
 {
 # Get a WUA Session
@@ -165,6 +172,27 @@ echo "Extracting Autorun information`n"  | Add-Content -Path $path\$logfile
 echo "Extracting GPO Result information`n" | Add-Content -Path $path\$logfile
 gpresult.exe /H $path\gpresult_$env:computername.html
 gpresult.exe /X $path\gpresult_$env:computername.xml
+
+# Export of AV product status is based on Get-AVStatus.ps1 (https://gist.github.com/jdhitsolutions/1b9dfb31fef91f34c54b344c6516c30b)
+echo "Extracting AntiVirus product information`n" | Add-Content -Path $path\$logfile
+$results = @()
+$AVProduct = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct
+foreach ($AV in $AVProduct)
+{
+    $state_hex = ConvertTo-Hex $AV.Productstate
+    $mid = $state_hex.Substring(3,2)
+    $end = $state_hex.Substring(5)
+    if ($mid -match "00|01") { $Enabled = $False }
+    else { $Enabled = $True }
+    if ($end -eq "00") { $UpToDate = $True }
+    else { $UpToDate = $False }
+    $results += $AV | Select-Object Displayname, ProductState,
+            @{Name = "Enabled"; Expression = { $Enabled } },
+            @{Name = "UpToDate"; Expression = { $UptoDate } },
+            @{Name = "Path"; Expression = { $_.pathToSignedProductExe } },
+            Timestamp
+}
+$results | export-csv -delimiter "`t" -path $path\antivirus_$env:computername.txt -notype
 
 echo "saving registry for further analysis`n" | Add-Content -Path $path\$logfile
 reg save hklm\system $path\system.sav
