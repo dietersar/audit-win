@@ -98,7 +98,10 @@ if ($status = 'Disabled')
 }
 
 echo "Extracting running services with account names`n" | Add-Content -Path $path\$logfile
-Get-WmiObject Win32_Service -filter 'State LIKE "Running"' | select DisplayName, StartName, State | export-csv -delimiter "`t" -path $path\services_$env:computername.txt -notype
+Get-WmiObject Win32_Service -filter 'State LIKE "Running"' | select DisplayName, StartName, StartMode, State | export-csv -delimiter "`t" -path $path\services_running_$env:computername.txt -notype
+
+echo "Extracting all services with account names`n" | Add-Content -Path $path\$logfile
+Get-WmiObject Win32_Service | select DisplayName, StartName, StartMode, State | export-csv -delimiter "`t" -path $path\services_all_$env:computername.txt -notype
 
 echo "Extracting Local Users`n" | Add-Content -Path $path\$logfile
 Get-LocalUser | export-csv -delimiter "`t" -path $path\local-users_$env:computername.txt -notype
