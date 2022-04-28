@@ -167,7 +167,7 @@ Get-NetTCPConnection | where {$_.State -eq "Listen"} | select `
   sort -Property ProcessName, UserName | export-csv -delimiter "`t" -path $path\net-listening_$env:computername.txt -notype
 
 echo "Extracting Autorun information`n"  | Add-Content -Path $path\$logfile
-.\autorunsc.exe -ct -o $path\autoruns_$env:computername.txt
+.\autorunsc.exe -ct -o $path\autoruns_$env:computername.txt /accepteula
 
 echo "Extracting GPO Result information`n" | Add-Content -Path $path\$logfile
 gpresult.exe /H $path\gpresult_$env:computername.html
