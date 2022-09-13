@@ -115,7 +115,7 @@ Get-LocalUser | export-csv -delimiter "`t" -path $path\local-users_$env:computer
 echo "Extracting Local Groups`n" | Add-Content -Path $path\$logfile
 Get-LocalGroup | export-csv -delimiter "`t" -path $path\local-groups_$env:computername.txt -notype
 echo "Extracting Local Administrator Group Memberships`n" | Add-Content -Path $path\$logfile
-Get-LocalGroupMember -Name Administrators | export-csv -delimiter "`t" -path $path\local-admin-group-membership_$env:computername.txt -notype
+Get-LocalGroupMember -SID S-1-5-32-544 | export-csv -delimiter "`t" -path $path\local-admin-group-membership_$env:computername.txt -notype
 
 echo "Extracting scheduled tasks`n" | Add-Content -Path $path\$logfile
 $schtask = schtasks.exe /query /s localhost  /V /FO CSV | ConvertFrom-Csv | Where { $_.TaskName -ne "TaskName" }
