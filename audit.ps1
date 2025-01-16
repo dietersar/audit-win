@@ -1,145 +1,153 @@
 # This system audit script is created by dieter [at] secudea [dot] be
 
-
 function ConvertTo-Hex
 {
     Param([int]$Number)
     '0x{0:x}' -f $Number
 }
 
-# Convert Wua History ResultCode to a Name # 0, and 5 are not used for history # See https://msdn.microsoft.com/en-us/library/windows/desktop/aa387095(v=vs.85).aspx
-# Copy from https://www.thewindowsclub.com/check-windows-update-history-using-powershell
-function Convert-WuaResultCodeToName
-{
-param( [Parameter(Mandatory=$true)]
-[int] $ResultCode
-)
-$Result = $ResultCode
-switch($ResultCode)
-{
-2
-{
-$Result = "Succeeded"
-}
-3
-{
-$Result = "Succeeded With Errors"
-}
-4
-{
-$Result = "Failed"
-}
-}
-return $Result
+function Write-Log {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+        [Parameter(Mandatory = $false)]
+        [switch]$FileOnly
+    )
+
+    # Write to the console unless FileOnly is specified
+    if (-not $FileOnly) {
+        Write-Host $Message
+    }
+
+    # Append to the log file
+    try {
+        Add-Content -Path $path\$logfile -Value $Message
+    } catch {
+        if (-not $FileOnly) {
+            Write-Host "Failed to write to log file: $path\$logfile" -ForegroundColor Red
+        }
+    }
 }
 
-function Get-WuaHistory
-{
-# Get a WUA Session
-$session = (New-Object -ComObject 'Microsoft.Update.Session')
-# Query the latest 1000 History starting with the first recordp
-$history = $session.QueryHistory("",0,1000) | ForEach-Object {
-$Result = Convert-WuaResultCodeToName -ResultCode $_.ResultCode
-# Make the properties hidden in com properties visible.
-$_ | Add-Member -MemberType NoteProperty -Value $Result -Name Result
-$Product = $_.Categories | Where-Object {$_.Type -eq 'Product'} | Select-Object -First 1 -ExpandProperty Name
-$_ | Add-Member -MemberType NoteProperty -Value $_.UpdateIdentity.UpdateId -Name UpdateId
-$_ | Add-Member -MemberType NoteProperty -Value $_.UpdateIdentity.RevisionNumber -Name RevisionNumber
-$_ | Add-Member -MemberType NoteProperty -Value $Product -Name Product -PassThru
-Write-Output $_
-}
-#Remove null records and only return the fields we want
-$history |
-Where-Object {![String]::IsNullOrWhiteSpace($_.title)} |
-Select-Object Result, Date, Title, SupportUrl, Product, UpdateId, RevisionNumber
+# Get the current working directory of the script
+$currentDir = Get-Location
+
+# Define the path to the wsusscn2.cab file in the current directory
+$wsusCabPath = Join-Path $currentDir "wsusscn2.cab"
+
+# Check if the wsusscn2.cab file exists in the current directory
+if (-Not (Test-Path $wsusCabPath)) {
+    Write-Log -Message "Error: wsusscn2.cab not found in the current directory: $currentDir" -ForegroundColor Red
+	Write-Log -Message "Fetch the last wsusscn2.cab file from http://download.windowsupdate.com/microsoftupdate/v6/wsusscan/wsusscn2.cab and put it in the same directory" -ForegroundColor Red
+    exit
 }
 
 $dir="audit_$env:computername"
-mkdir $dir 
+if (-Not (Test-Path -Path $dir)) {
+    mkdir $dir
+}
 $path = Resolve-Path $dir
 $logfile = "log-$env:computername.txt"
-echo "Creation of directories successfull: $dir`n" | Set-content -Path $path\$logfile
+Write-Log -Message "Creation of directories successfull: $dir"
 
-echo "Backup of local group policies`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Backup of local group policies"
 ./LGPO /b "$path"
 
-echo "Exporting Security Settings`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Exporting Security Settings"
 secedit /export /cfg $path\security_$env:computername.inf /log $path\security_$env:computername.log
 
-echo "Getting system information`n" | Add-Content -Path $path\$logfile
-echo "Computer: $env:computername" | Add-Content -Path $path\$logfile
+Write-Log -Message "Getting system information"
+Write-Log -Message "Computer: $env:computername" -FileOnly
 date | Add-Content -Path $path\$logfile
-echo "User: $env:USERNAME\$env:USERDOMAIN`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "User: $env:USERNAME\$env:USERDOMAIN" -FileOnly
 
-echo "Extracting systeminfo`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting systeminfo"
 systeminfo > $path\systeminfo-$env:computername.txt
-echo "Get Computer Information`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Get Computer Information"
 Get-ComputerInfo | Out-File -FilePath $path\computer-info_$env:computername.txt -NoClobber
 
-echo "Extracting installed applications`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting installed applications"
 Get-WmiObject Win32_product | select name,vendor,version | export-csv -delimiter "`t" -path $path\installed-software_$env:computername.txt -notype
 Get-Package | select name,version,summary | export-csv -delimiter "`t" -path $path\installed-packages_$env:computername.txt -notype
 
-echo "Extracting installed optional windows components`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting installed optional windows components"
 Get-WindowsOptionalFeature -Online | select FeatureName,State | export-csv -delimiter "`t" -path $path\installed-optional-components_$env:computername.txt -notype
 
-echo "Bios Information:`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting Bios Information"
 Get-WmiObject -Class WIN32_BIOS | Add-Content -Path $path\$logfile
 
-# checking if Windows update service is running, if not set it to manual temporarily to allow the script to extract patch information. Reset it to the previous state afterwards
-$status = (Get-Service -Name wuauserv).StartType
-if ($status = 'Disabled')
+Write-Log -Message "Extracting missing patches..."
+
+# Create the necessary COM objects for offline update searching
+$updateSession = New-Object -ComObject Microsoft.Update.Session
+$updateServiceManager = New-Object -ComObject Microsoft.Update.ServiceManager
+$updateService = $updateServiceManager.AddScanPackageService("Offline Sync Service", $wsusCabPath, 1)
+$updateSearcher = $updateSession.CreateUpdateSearcher()
+
+# Set the server selection to "Others" (3)
+$updateSearcher.ServerSelection = 3
+$updateSearcher.ServiceID = $updateService.ServiceID
+
+# Perform the search for missing updates
+$searchResult = $updateSearcher.Search("IsInstalled=0")
+
+# Get the list of updates from the search result
+$updates = $searchResult.Updates
+
+# Check if any updates were found
+if ($updates.Count -eq 0) {
+    Write-Log -Message "There are no applicable updates."
+}
+else
 {
-    Get-Service wuauserv | Set-Service -StartupType Manual -Status Running
+# Output the list of missing updates
+Write-Log -Message "List of applicable items on the machine when using wsusscn2.cab:" -FileOnly
+
+for ($i = 0; $i -lt $updates.Count; $i++) {
+    $update = $updates.Item($i)
+    Write-Log -Message "$($i + 1)> $($update.Title)" -FileOnly
+}
 }
 
-echo "Extracting Installed patches`n" | Add-Content -Path $path\$logfile
-Get-WuaHistory | select Result,Date,Title,Product | export-csv -delimiter "`t" -path $path\installed-patches_$env:computername.txt -notype
+Write-Log -Message "Extracting Installed hotfixes"
 Get-HotFix | export-csv -delimiter "`t" -path $path\installed-hotfixes_$env:computername.txt -notype
 
-# reset the windows update status
-if ($status = 'Disabled')
-{
-    Get-Service wuauserv | Stop-Service -Force
-    Get-Service wuauserv | Set-Service -StartupType Disabled
-}
-
-echo "Extracting running services with account names`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting running services with account names"
 Get-WmiObject Win32_Service -filter 'State LIKE "Running"' | select DisplayName, StartName, StartMode, State | export-csv -delimiter "`t" -path $path\services_running_$env:computername.txt -notype
 
-echo "Extracting all services with account names`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting all services with account names"
 Get-WmiObject Win32_Service | select DisplayName, StartName, StartMode, State | export-csv -delimiter "`t" -path $path\services_all_$env:computername.txt -notype
 
-echo "Extracting Local Users`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting Local Users"
 Get-LocalUser | export-csv -delimiter "`t" -path $path\local-users_$env:computername.txt -notype
-echo "Extracting Local Groups`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting Local Groups"
 Get-LocalGroup | export-csv -delimiter "`t" -path $path\local-groups_$env:computername.txt -notype
-echo "Extracting Local Administrator Group Memberships`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting Local Administrator Group Memberships"
 Get-LocalGroupMember -SID S-1-5-32-544 | export-csv -delimiter "`t" -path $path\local-admin-group-membership_$env:computername.txt -notype
 
-echo "Extracting scheduled tasks`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting scheduled tasks"
 $schtask = schtasks.exe /query /s localhost  /V /FO CSV | ConvertFrom-Csv | Where { $_.TaskName -ne "TaskName" }
 $schtask | where { $_.Author -ne "Microsoft Corporation" } | Select TaskName,"Task To Run","Run As User" | export-csv -delimiter "`t" -path $path\tasks_$env:computername.txt -notype
 
-echo "Extracting shared folders`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting shared folders"
 Get-SmbShare | select Name,Path,Description | export-csv -delimiter "`t" -path $path\shares_$env:computername.txt -notype
 
-echo "Extracting running processes`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting running processes"
 Get-Process -IncludeUserName | select ProcessName,UserName,Path | export-csv -delimiter "`t" -path $path\process-list_$env:computername.txt -notype
 
-echo "Getting network settings`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Getting network settings"
 
 Get-NetIPConfiguration | Select-object InterfaceDescription -ExpandProperty AllIPAddresses | export-csv -delimiter "`t" -path $path\net-adapters_$env:computername.txt -notype
 Get-NetIPAddress | Sort InterfaceIndex | export-csv -delimiter "`t" -path $path\net-ipaddresses_$env:computername.txt -notype
 Get-NetRoute -Protocol Local | export-csv -delimiter "`t" -path $path\net-routes_$env:computername.txt -notype
 Get-NetAdapterBinding | select InterfaceAlias,Description,ENABLED | export-csv -delimiter "`t" -path $path\net-adapterBindings_$env:computername.txt -notype
 
-echo "Extracting Local Firewall settings `n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting Local Firewall settings "
 Get-NetFirewallProfile  | export-csv -delimiter "`t" -path $path\fw-profile-local_$env:computername.txt -notype
 Get-NetFirewallRule | export-csv -delimiter "`t" -path $path\fw-rules-local_$env:computername.txt -notype
 netsh advfirewall export $path\fw-export-local.wfw
 
-echo "Extracting Active Firewall settings `n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting Active Firewall settings "
 Get-NetFirewallProfile -PolicyStore ActiveStore | export-csv -delimiter "`t" -path $path\fw-profile-active_$env:computername.txt -notype
 Get-NetFirewallSetting -PolicyStore ActiveStore  | export-csv -delimiter "`t" -path $path\fw-settings-active_$env:computername.txt -notype
 Get-NetFirewallRule -PolicyStore ActiveStore  | export-csv -delimiter "`t" -path $path\fw-rules-active_$env:computername.txt -notype
@@ -166,15 +174,15 @@ Get-NetTCPConnection | where {$_.State -eq "Listen"} | select `
   @{n="UserName";e={($obj |? PID -eq $_.OwningProcess | select -ExpandProperty UserName)}} |
   sort -Property ProcessName, UserName | export-csv -delimiter "`t" -path $path\net-listening_$env:computername.txt -notype
 
-echo "Extracting Autorun information`n"  | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting Autorun information`n"  | Add-Content -Path $path\$logfile
 .\autorunsc.exe -ct -o $path\autoruns_$env:computername.txt /accepteula
 
-echo "Extracting GPO Result information`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting GPO Result information"
 gpresult.exe /H $path\gpresult_$env:computername.html
 gpresult.exe /X $path\gpresult_$env:computername.xml
 
 # Export of AV product status is based on Get-AVStatus.ps1 (https://gist.github.com/jdhitsolutions/1b9dfb31fef91f34c54b344c6516c30b)
-echo "Extracting AntiVirus product information`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "Extracting AntiVirus product information"
 $results = @()
 $AVProduct = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct
 foreach ($AV in $AVProduct)
@@ -194,7 +202,7 @@ foreach ($AV in $AVProduct)
 }
 $results | export-csv -delimiter "`t" -path $path\antivirus_$env:computername.txt -notype
 
-echo "saving registry for further analysis`n" | Add-Content -Path $path\$logfile
+Write-Log -Message "saving registry for further analysis"
 reg save hklm\system $path\system.sav
 reg save hklm\security $path\security.sav
 reg save hklm\sam $path\sam.sav
@@ -211,4 +219,4 @@ Compress-Archive @compress
 Remove-Item "$path\*.sav"
 Remove-Item "$path\hklm.reg"
 
-echo "All data has been extracted"
+Write-Log -Message "Audit completed successfully. Output saved to $path." -ForegroundColor Green
